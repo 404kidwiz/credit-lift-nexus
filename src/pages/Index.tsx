@@ -1,4 +1,3 @@
-
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CreditScoreRing } from "@/components/CreditScoreRing";
@@ -8,11 +7,22 @@ import { RecentActivity } from "@/components/RecentActivity";
 import { ActionCards } from "@/components/ActionCards";
 import { TrendChart } from "@/components/TrendChart";
 import { AIInsights } from "@/components/AIInsights";
+import { RecentUploads } from "@/components/RecentUploads";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { useAuth } from "@/contexts/AuthContext";
+import { useNavigate } from "react-router-dom";
 
 const Index = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
+
+  const handleUploadClick = () => {
+    navigate('/upload');
+  };
+
+  const handleAIUploadClick = () => {
+    navigate('/ai-upload');
+  };
 
   return (
     <ProtectedRoute>
@@ -48,6 +58,7 @@ const Index = () => {
             {/* Right Column - Actions & Activity */}
             <div className="lg:col-span-1 space-y-6">
               <ActionCards />
+              <RecentUploads />
               <RecentActivity />
             </div>
           </div>
@@ -57,8 +68,17 @@ const Index = () => {
             <div className="p-6">
               <h3 className="text-lg font-medium text-slate-800 mb-4">Quick Actions</h3>
               <div className="flex flex-wrap gap-3">
-                <Button className="bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white shadow-lg">
+                <Button 
+                  onClick={handleUploadClick}
+                  className="bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white shadow-lg"
+                >
                   Upload Credit Report
+                </Button>
+                <Button 
+                  onClick={handleAIUploadClick}
+                  className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white shadow-lg"
+                >
+                  🤖 AI-Powered Upload
                 </Button>
                 <Button variant="outline" className="border-blue-200 text-blue-700 hover:bg-blue-50">
                   Generate Dispute Letter
