@@ -10,7 +10,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Brain, Zap, Shield, Building, CheckCircle, AlertCircle, Settings } from 'lucide-react';
 import { AIPdfAnalysisService, AIAnalysisConfig } from '@/lib/services/aiPdfAnalysis';
 
-type AIProvider = 'gemini' | 'openai' | 'claude' | 'azure';
+type AIProvider = 'gemini' | 'openai' | 'claude' | 'azure' | 'openrouter';
 
 interface AIProviderSelectorProps {
   onConfigChange: (config: AIAnalysisConfig | null) => void;
@@ -31,27 +31,34 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
     cost: string;
   }>>([]);
 
-  // Load providers on component mount
+  // Load providers and set default on component mount
   useEffect(() => {
-    try {
-      const availableProviders = AIPdfAnalysisService.getAvailableProviders();
-      setProviders(availableProviders);
-      
-      // Set default API key for Gemini if available
-      if (!apiKey && selectedProvider === 'gemini') {
-        const geminiKey = import.meta.env.VITE_GEMINI_API_KEY;
-        if (geminiKey) {
-          setApiKey(geminiKey);
-          handleApiKeyChange(geminiKey);
-        }
-      }
-    } catch (error) {
-      console.error('Error loading providers:', error);
+    const availableProviders = AIPdfAnalysisService.getAvailableProviders();
+    setProviders(availableProviders);
+
+    if (currentConfig?.provider && currentConfig?.apiKey) {
+      return;
     }
-  }, []);
+
+    const firstProviderWithKey = availableProviders.find(p => {
+      switch (p.id) {
+        case 'openrouter': return !!import.meta.env.VITE_OPENROUTER_API_KEY;
+        case 'gemini': return !!import.meta.env.VITE_GEMINI_API_KEY;
+        case 'openai': return !!import.meta.env.VITE_OPENAI_API_KEY;
+        case 'claude': return !!import.meta.env.VITE_CLAUDE_API_KEY;
+        default: return false;
+      }
+    });
+
+    if (firstProviderWithKey) {
+      handleProviderSelect(firstProviderWithKey.id as AIProvider);
+    }
+  }, []); // Should run only once on mount
 
   const getProviderIcon = (providerId: string) => {
     switch (providerId) {
+      case 'openrouter':
+        return <Zap className="h-5 w-5 text-orange-500" />;
       case 'gemini':
         return <Brain className="h-5 w-5 text-blue-500" />;
       case 'openai':
@@ -73,6 +80,8 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
         return 'bg-yellow-100 text-yellow-800';
       case 'pay-per-page':
         return 'bg-blue-100 text-blue-800';
+      case 'variable':
+        return 'bg-purple-100 text-purple-800';
       default:
         return 'bg-gray-100 text-gray-800';
     }
@@ -80,6 +89,20 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
 
   const getModelOptions = (providerId: string) => {
     switch (providerId) {
+      case 'openrouter':
+        return [
+          // Cost-Effective Options
+          { value: 'openai/gpt-4o-mini', label: 'GPT-4o Mini (Cost-Effective)' },
+          { value: 'anthropic/claude-3-haiku-20240307', label: 'Claude 3 Haiku (Fast)' },
+          { value: 'google/gemini-1.5-flash', label: 'Gemini 1.5 Flash (Google)' },
+          // High-Performance Options
+          { value: 'openai/gpt-4o', label: 'GPT-4o (High Accuracy)' },
+          { value: 'anthropic/claude-3-opus-20240229', label: 'Claude 3 Opus (Best)' },
+          { value: 'meta-llama/llama-3.1-70b-instruct', label: 'Llama 3.1 70B (Meta)' },
+          // Specialized Options
+          { value: 'mistralai/mistral-7b-instruct', label: 'Mistral 7B (Fast)' },
+          { value: 'perplexity/llama-3.1-8b-instruct', label: 'Llama 3.1 8B (Lightweight)' }
+        ];
       case 'gemini':
         return [
           { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash' },
@@ -87,7 +110,7 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
         ];
       case 'openai':
         return [
-          { value: 'gpt-4-vision-preview', label: 'GPT-4 Vision Preview' },
+          { value: 'gpt-4o-mini', label: 'GPT-4o Mini (Recommended)' },
           { value: 'gpt-4o', label: 'GPT-4o' }
         ];
       case 'claude':
@@ -111,14 +134,32 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
     setModel(defaultModel);
     setTestResult(null);
     
-    // Update config if we have an API key
-    if (apiKey) {
-      const config: AIAnalysisConfig = {
-        provider: providerId as AIProvider,
-        apiKey,
+    let envApiKey = '';
+    switch (providerId) {
+      case 'openrouter':
+        envApiKey = import.meta.env.VITE_OPENROUTER_API_KEY || '';
+        break;
+      case 'gemini':
+        envApiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
+        break;
+      case 'openai':
+        envApiKey = import.meta.env.VITE_OPENAI_API_KEY || '';
+        break;
+      case 'claude':
+        envApiKey = import.meta.env.VITE_CLAUDE_API_KEY || '';
+        break;
+    }
+
+    setApiKey(envApiKey);
+
+    if (envApiKey) {
+      onConfigChange({
+        provider: providerId,
+        apiKey: envApiKey,
         model: defaultModel
-      };
-      onConfigChange(config);
+      });
+    } else {
+      onConfigChange(null);
     }
   };
 

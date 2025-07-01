@@ -10,6 +10,8 @@ import { Upload, Brain, CheckCircle, AlertCircle } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { TabsContent } from '@/components/ui/tabs';
 
 function AIUpload() {
   const navigate = useNavigate();
@@ -29,7 +31,7 @@ function AIUpload() {
         variant: "destructive"
       });
     }
-  }, [user, session, navigate]);
+  }, [user, session, navigate, toast]);
 
   const handleConfigChange = (config: AIAnalysisConfig | null) => {
     setAiConfig(config);
@@ -106,15 +108,6 @@ function AIUpload() {
       return;
     }
 
-    if (!aiConfig) {
-      toast({
-        title: "AI Provider Required",
-        description: "Please configure an AI provider before uploading files.",
-        variant: "destructive"
-      });
-      return;
-    }
-
     if (acceptedFiles.length === 0) {
       return;
     }
@@ -136,7 +129,11 @@ function AIUpload() {
       setStatus('Running AI analysis...');
       const result = await AIPdfAnalysisService.analyzeWithAI(
         file,
-        aiConfig,
+        aiConfig || {
+          provider: 'openrouter',
+          apiKey: 'key-loaded-from-env',
+          model: ''
+        },
         (progressValue, statusText) => {
           setProgress(20 + (progressValue * 0.6));
           setStatus(statusText);
@@ -250,7 +247,8 @@ function AIUpload() {
     onDrop,
     accept: {
       'application/pdf': ['.pdf'],
-      'image/*': ['.jpg', '.jpeg', '.png', '.tiff', '.tif']
+      'image/png': ['.png'],
+      'image/jpeg': ['.jpg', '.jpeg']
     },
     maxSize: 10 * 1024 * 1024, // 10MB
     multiple: false,
@@ -268,97 +266,86 @@ function AIUpload() {
         </div>
 
         <div className="grid lg:grid-cols-2 gap-8">
-          {/* AI Provider Configuration */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Brain className="h-5 w-5" />
-                Configure AI Provider
-              </CardTitle>
-              <CardDescription>
-                Select and configure an AI provider for enhanced analysis
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <AIProviderSelector
-                onConfigChange={handleConfigChange}
-                currentConfig={aiConfig}
-              />
-            </CardContent>
-          </Card>
+          <Tabs defaultValue="upload" className="w-full">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="upload">1. Upload Report</TabsTrigger>
+              <TabsTrigger value="provider-config">2. Configure AI</TabsTrigger>
+            </TabsList>
+            
+            <TabsContent value="upload">
+              <Card className="mt-4">
+                <CardHeader>
+                  <CardTitle>Upload Your Credit Report</CardTitle>
+                  <CardDescription>
+                    Drag & drop your PDF, JPG, or PNG file below to start the analysis.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div
+                    {...getRootProps()}
+                    className={`flex flex-col items-center justify-center p-8 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${
+                      isDragActive
+                        ? 'border-blue-500 bg-blue-50'
+                        : 'border-gray-300 hover:border-gray-400'
+                    } ${(!aiConfig || isAnalyzing) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <input {...getInputProps()} />
+                    
+                    {isAnalyzing ? (
+                      <div className="text-center">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                        <div>
+                          <p className="text-sm text-gray-600 mb-2">{status}</p>
+                          <Progress value={progress} className="w-full" />
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <Upload className="mx-auto h-12 w-12 text-gray-400" />
+                        <p className="mt-2 text-sm text-gray-600">
+                          {isDragActive
+                            ? 'Drop the file here...'
+                            : 'Drag & drop a credit report here, or click to select'}
+                        </p>
+                        <p className="mt-1 text-xs text-green-600 font-medium">
+                          ✅ Best: JPG, PNG images (fast & reliable)
+                        </p>
+                        <p className="mt-1 text-xs text-yellow-600">
+                          ⚠️ PDF files may have processing issues
+                        </p>
+                        <p className="mt-1 text-xs text-gray-400">
+                          Max file size: 10MB
+                        </p>
+                        <p className="mt-1 text-sm text-gray-500">
+                          Select a provider in the tab above to begin
+                        </p>
+                      </div>
+                    )}
+                  </div>
 
-          {/* File Upload */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Upload className="h-5 w-5" />
-                Upload Credit Report
-              </CardTitle>
-              <CardDescription>
-                Upload your credit report PDF or image for AI analysis
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div
-                {...getRootProps()}
-                className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
-                  isDragActive
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-gray-300 hover:border-gray-400'
-                } ${(!aiConfig || isAnalyzing) ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                <input {...getInputProps()} />
-                
-                {isAnalyzing ? (
-                  <div className="space-y-4">
-                    <div className="flex justify-center">
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                  {aiConfig && (
+                    <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle className="h-4 w-4 text-green-500" />
+                        <span className="text-sm text-green-700">
+                          Ready to analyze with {aiConfig.provider}
+                        </span>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-sm text-gray-600 mb-2">{status}</p>
-                      <Progress value={progress} className="w-full" />
-                    </div>
-                  </div>
-                ) : !aiConfig ? (
-                  <div>
-                    <Upload className="mx-auto h-12 w-12 text-gray-400" />
-                    <p className="mt-2 text-sm text-gray-600">
-                      Please configure an AI provider first
-                    </p>
-                  </div>
-                ) : (
-                  <div>
-                    <Upload className="mx-auto h-12 w-12 text-gray-400" />
-                    <p className="mt-2 text-sm text-gray-600">
-                      {isDragActive
-                        ? 'Drop the file here...'
-                        : 'Drag & drop a credit report here, or click to select'}
-                    </p>
-                    <p className="mt-1 text-xs text-green-600 font-medium">
-                      ✅ Best: JPG, PNG images (fast & reliable)
-                    </p>
-                    <p className="mt-1 text-xs text-yellow-600">
-                      ⚠️ PDF files may have processing issues
-                    </p>
-                    <p className="mt-1 text-xs text-gray-400">
-                      Max file size: 10MB
-                    </p>
-                  </div>
-                )}
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+            
+            <TabsContent value="provider-config">
+              <div className="p-4">
+                <AIProviderSelector
+                  onConfigChange={handleConfigChange}
+                  currentConfig={aiConfig}
+                />
               </div>
-
-              {aiConfig && (
-                <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle className="h-4 w-4 text-green-500" />
-                    <span className="text-sm text-green-700">
-                      Ready to analyze with {aiConfig.provider}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+            </TabsContent>
+          </Tabs>
         </div>
 
         {/* Features */}
