@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -62,16 +62,10 @@ export const GCFAnalysisResults: React.FC<GCFAnalysisResultsProps> = ({ analysis
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('overview');
 
-  const supabaseClient = new CreditReportSupabaseClient(supabase);
+  const supabaseClient = useMemo(() => new CreditReportSupabaseClient(supabase), []);
 
-  useEffect(() => {
-    const id = analysisId || reportId;
-    if (id && user) {
-      loadGCFAnalysis(id);
-    }
-  }, [analysisId, reportId, user]);
-
-  const loadGCFAnalysis = async (id: string) => {
+  const loadGCFAnalysis = useCallback(async (id: string) => {
+    if (!user) return;
     try {
       setLoading(true);
       
@@ -85,7 +79,7 @@ export const GCFAnalysisResults: React.FC<GCFAnalysisResultsProps> = ({ analysis
       setAnalysis(analysisData);
 
       // Load violation summary
-      const summaries = await supabaseClient.getViolationSummaries(user!.id);
+      const summaries = await supabaseClient.getViolationSummaries(user.id);
       const summary = summaries.find(s => s.id === id);
       if (summary) {
         setViolationSummary(summary);
@@ -102,7 +96,14 @@ export const GCFAnalysisResults: React.FC<GCFAnalysisResultsProps> = ({ analysis
     } finally {
       setLoading(false);
     }
-  };
+  }, [supabaseClient, user, toast]);
+
+  useEffect(() => {
+    const id = analysisId || reportId;
+    if (id) {
+      loadGCFAnalysis(id);
+    }
+  }, [analysisId, reportId, loadGCFAnalysis]);
 
   const handleViolationSelection = (violationIndex: number) => {
     const violationId = `violation-${violationIndex}`;

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -6,7 +6,7 @@ import { Upload, FileText, Scale, TrendingUp, BarChart3, Shield } from "lucide-r
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
-import { useToast } from "@/hooks/use-toast";
+import { useToast } from "@/components/ui/use-toast";
 
 interface ActionStats {
   totalReports: number;
@@ -27,17 +27,12 @@ export function ActionCards() {
     latestReportId: null
   });
 
-  useEffect(() => {
-    if (user) {
-      loadStats();
-    }
-  }, [user]); // loadStats is stable, no need to include
-
-  const loadStats = async () => {
+  const loadStats = useCallback(async () => {
+    if (!user) return;
     try {
       // Load user's credit reports
       const { data: reports, error: reportsError } = await supabase
-        .from('credit_reports')
+        .from('credit_reports_analysis')
         .select('id, created_at')
         .eq('user_id', user?.id)
         .order('created_at', { ascending: false });
@@ -76,7 +71,11 @@ export function ActionCards() {
     } catch (error) {
       console.error('Failed to load stats:', error);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    loadStats();
+  }, [loadStats]);
 
   const handleGenerateLetter = async () => {
     if (!user) {

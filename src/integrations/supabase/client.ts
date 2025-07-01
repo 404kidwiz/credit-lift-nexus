@@ -2,10 +2,21 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '@/lib/types/supabase';
 
-const SUPABASE_URL = "https://vyweoogxcvlpugyaxcru.supabase.co";
-const SUPABASE_PUBLISHABLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ5d2Vvb2d4Y3ZscHVneWF4Y3J1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTA0NjAwNjMsImV4cCI6MjA2NjAzNjA2M30.xjmEKuR4PTeq6S3o0QBCk1PWF1rfk0U_euvx7xoaKWo";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+console.log('Supabase: Initializing client with URL:', SUPABASE_URL);
+console.log('Supabase: VITE_SUPABASE_ANON_KEY used:', SUPABASE_ANON_KEY);
 
 // Import the supabase client like this:
 // import { supabase } from "@/integrations/supabase/client";
 
-export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: true
+  }
+});
+
+console.log('Supabase: Client initialized');

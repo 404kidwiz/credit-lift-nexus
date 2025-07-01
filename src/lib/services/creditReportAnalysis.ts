@@ -229,7 +229,6 @@ export class CreditReportAnalysisService {
           date_of_last_activity: account.date_reported,
           status: 'active',
           description: `${account.creditor_name} - ${account.account_status} - Account ${account.account_number}`,
-          raw_data: account,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         });
@@ -294,56 +293,53 @@ export class CreditReportAnalysisService {
    */
   private static async saveAnalysisResults(
     reportId: string, 
-    analysis: any, 
-    summary: any
+    analysis: {
+      creditReport: CreditReport;
+      accounts: CreditAccount[];
+      negativeItems: NegativeItem[];
+      violations: Violation[];
+    }, 
+    summary: {
+      totalAccounts: number;
+      negativeItemsCount: number;
+      violationsCount: number;
+      estimatedScoreImpact: number;
+      recommendedActions: string[];
+    }
   ): Promise<void> {
     try {
       console.log('Saving analysis results to database...');
       
-      // Get the current user
+      // Get the current user from the session
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         console.error('No authenticated user found');
         return;
       }
-      
-      console.log('Current user:', user.id);
-      
-      // Save accounts (without user_id since it's not in the schema)
-      console.log('Saving accounts...');
-      for (const account of analysis.accounts) {
-        const accountData = {
+
+      // Prepare the parsed_data JSONB object
+      const parsedData = {
+        personal_info: {
+          name: analysis.creditReport.file_name || 'Unknown',
+          ssn: '',
+          address: '',
+          date_of_birth: ''
+        },
+        accounts: analysis.accounts.map(account => ({
           id: account.id,
-          credit_report_id: reportId,
           account_number: account.account_number,
-          account_type: account.account_type,
           creditor_name: account.creditor_name,
-          account_status: account.account_status,
-          date_opened: account.date_opened,
+          account_type: account.account_type,
+          balance: account.current_balance,
           credit_limit: account.credit_limit,
-          current_balance: account.current_balance,
           payment_status: account.payment_status,
-          account_holder: account.account_holder,
-          responsibility: account.responsibility
-        };
-        
-        console.log('Saving account:', accountData);
-        const { error: accountError } = await supabase
-          .from('credit_accounts')
-          .insert(accountData);
-          
-        if (accountError) {
-          console.error('Error saving account:', accountError);
-        }
-      }
-      
-      // Save negative items (with user_id for RLS policies)
-      console.log('Saving negative items...');
-      for (const item of analysis.negativeItems) {
-        const itemData = {
+          date_opened: account.date_opened,
+          date_reported: account.date_reported,
+          payment_history: account.payment_history
+        })),
+        negative_items: analysis.negativeItems.map(item => ({
           id: item.id,
           credit_account_id: item.credit_account_id,
-          user_id: user.id, // Required for RLS policies
           item_type: item.item_type,
           creditor_name: item.creditor_name,
           account_number: item.account_number,
@@ -353,47 +349,40 @@ export class CreditReportAnalysisService {
           date_of_first_delinquency: item.date_of_first_delinquency,
           date_of_last_activity: item.date_of_last_activity,
           status: item.status,
-          description: item.description,
-          raw_data: item.raw_data
-        };
-        
-        console.log('Saving negative item:', itemData);
-        const { error: itemError } = await supabase
-          .from('negative_items')
-          .insert(itemData);
-          
-        if (itemError) {
-          console.error('Error saving negative item:', itemError);
-          // Continue processing even if this fails
-        }
+          description: item.description
+        })),
+        inquiries: [], // Will be populated if needed
+        public_records: [], // Will be populated if needed
+        summary: summary
+      };
+
+      // Prepare the violations JSONB array
+      const violationsData = analysis.violations.map(violation => ({
+        id: violation.id,
+        credit_account_id: violation.credit_account_id,
+        violation_type: violation.violation_type,
+        violation_description: violation.violation_description,
+        severity: violation.severity,
+        suggested_action: violation.suggested_action
+      }));
+
+      // Update the credit_reports_analysis record with the parsed data
+      const { error: updateError } = await supabase
+        .from('credit_reports_analysis')
+        .update({
+          parsed_data: parsedData,
+          violations: violationsData,
+          processed_at: new Date().toISOString()
+        })
+        .eq('id', reportId)
+        .eq('user_id', user.id);
+
+      if (updateError) {
+        console.error('Error updating analysis results:', updateError);
+      } else {
+        console.log('Analysis results saved successfully');
       }
-      
-      // Save violations (with user_id for RLS policies)
-      console.log('Saving violations...');
-      for (const violation of analysis.violations) {
-        const violationData = {
-          id: violation.id,
-          credit_account_id: violation.credit_account_id,
-          user_id: user.id, // Required for RLS policies
-          violation_type: violation.violation_type,
-          violation_description: violation.violation_description,
-          severity: violation.severity,
-          suggested_action: violation.suggested_action
-        };
-        
-        console.log('Saving violation:', violationData);
-        const { error: violationError } = await supabase
-          .from('violations')
-          .insert(violationData);
-          
-        if (violationError) {
-          console.error('Error saving violation:', violationError);
-          // Continue processing even if this fails
-        }
-      }
-      
-      console.log('Database save completed successfully');
-      
+
     } catch (error) {
       console.error('Error saving analysis results:', error);
       // Don't throw error - let the analysis complete even if database save fails
@@ -401,25 +390,26 @@ export class CreditReportAnalysisService {
   }
 
   /**
-   * Extract personal information from text
+   * Extract personal information from text using enhanced patterns
    */
-  private static extractPersonalInfo(text: string): any {
-    // Simple regex patterns for personal info extraction
+  private static extractPersonalInfo(text: string): PersonalInfo {
+    const info: PersonalInfo = {};
+    
+    // Patterns for PII extraction
     const patterns = {
       name: /(?:name|full name)[:\s]+([A-Za-z\s]+)/i,
       ssn: /(?:ssn|social security)[:\s]*(\d{3}-\d{2}-\d{4})/i,
       dob: /(?:date of birth|dob|birth date)[:\s]+(\d{1,2}\/\d{1,2}\/\d{4})/i,
       address: /(?:address|mailing address)[:\s]+([^\n]+)/i
     };
-
-    const info: any = {};
+    
     for (const [key, pattern] of Object.entries(patterns)) {
       const match = text.match(pattern);
       if (match) {
-        info[key] = match[1].trim();
+        info[key as keyof PersonalInfo] = match[1].trim();
       }
     }
-
+    
     return info;
   }
 
@@ -443,8 +433,8 @@ export class CreditReportAnalysisService {
       balance: /(?:BALANCE|AMOUNT\s*OWED|CURRENT\s*BALANCE)[:\s]*\$?([\d,]+\.?\d*)/gi,
       creditLimit: /(?:CREDIT\s*LIMIT|LIMIT|HIGH\s*CREDIT|AVAILABLE\s*CREDIT)[:\s]*\$?([\d,]+\.?\d*)/gi,
       paymentStatus: /(?:STATUS|PAYMENT\s*STATUS|ACCOUNT\s*STATUS)[:\s]*(CURRENT|LATE|PAST\s*DUE|CHARGE\s*OFF|COLLECTION|CLOSED|PAID|DEFAULT)/gi,
-      dateOpened: /(?:OPENED|DATE\s*OPENED|OPEN\s*DATE)[:\s]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/gi,
-      dateReported: /(?:REPORTED|DATE\s*REPORTED|LAST\s*REPORTED)[:\s]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/gi,
+      dateOpened: /(?:OPENED|DATE\s*OPENED|OPEN\s*DATE)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/gi,
+      dateReported: /(?:REPORTED|DATE\s*REPORTED|LAST\s*REPORTED)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/gi,
       
       // Account type indicators
       creditCard: /(?:CREDIT\s*CARD|VISA|MASTERCARD|AMEX|AMERICAN\s*EXPRESS|DISCOVER|REVOLVING)/gi,
@@ -464,7 +454,7 @@ export class CreditReportAnalysisService {
     
     try {
       // Split text into potential account sections
-      let accountSections = text.match(patterns.accountSection) || [];
+      let accountSections: string[] = Array.from(text.match(patterns.accountSection) || []);
       
       // If no clear sections found, try splitting by common separators
       if (accountSections.length === 0) {
@@ -601,30 +591,113 @@ export class CreditReportAnalysisService {
   /**
    * Extract inquiry information from text
    */
-  private static extractInquiries(text: string): any[] {
-    // Simplified inquiry extraction
-    return [
-      {
-        id: this.generateUUID(),
-        creditor_name: 'Chase Bank',
-        inquiry_date: '2024-01-10',
-        inquiry_type: 'credit_card'
-      }
-    ];
+  private static extractInquiries(text: string): {
+    id: string;
+    creditor_name: string;
+    inquiry_date: string;
+    inquiry_type: string;
+  }[] {
+    const inquiries: {
+      id: string;
+      creditor_name: string;
+      inquiry_date: string;
+      inquiry_type: string;
+    }[] = [];
+    
+    // Patterns for inquiry extraction
+    const patterns = {
+      inquirySection: /(?:INQUIRIES|INQUIRY\s*HISTORY)[\s\S]*?(?=(?:PUBLIC\s*RECORDS|$))/gi,
+      creditor: /(?:COMPANY|CREDITOR|INQUIRER)[:\s]*([A-Z][A-Za-z\s&.,-]{2,50})/gi,
+      purpose: /(?:PURPOSE|REASON|FOR)[:\s]*(.*)/gi,
+      type: /(?:TYPE|INQUIRY\s*TYPE)[:\s]*(HARD|SOFT)/gi,
+      date: /(?:DATE|INQUIRY\s*DATE|DATE\s*OF\s*INQUIRY)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/gi,
+    };
+    
+    try {
+      // Process each inquiry section
+      Object.entries(patterns).forEach(([section, pattern]) => {
+        const match = text.match(pattern);
+        if (match) {
+          const inquiryText = match[0];
+          const lines = inquiryText.split('\n');
+          
+          lines.forEach(line => {
+            const match = line.match(/([A-Z][A-Za-z\s&]+)\s*\(([^)]+)\)\s*-\s*(\d{2}\/\d{2}\/\d{4})/);
+            if (match) {
+              inquiries.push({
+                id: this.generateUUID(),
+                creditor_name: match[1].trim(),
+                inquiry_type: match[2].toLowerCase().replace(' ', '_'),
+                inquiry_date: match[3]
+              });
+            }
+          });
+        }
+      });
+      
+    } catch (error) {
+      console.error('Error in extractInquiries:', error);
+    }
+    
+    return inquiries;
   }
 
   /**
    * Extract public records from text
    */
-  private static extractPublicRecords(text: string): any[] {
-    // Simplified public records extraction
-    return [];
+  private static extractPublicRecords(text: string): {
+    id: string;
+    type: string;
+    status: string;
+    date_filed: string;
+    amount?: number;
+  }[] {
+    const publicRecords: {
+      id: string;
+      type: string;
+      status: string;
+      date_filed: string;
+      amount?: number;
+    }[] = [];
+    const publicRecordsPattern = /(?:PUBLIC\s*RECORDS)[\s\S]*?(?=(?:ACCOUNT|INQUIRY|$))/gi;
+    const recordsMatch = text.match(publicRecordsPattern);
+    
+    if (recordsMatch) {
+      const recordsText = recordsMatch[0];
+      
+      // Look for bankruptcy
+      if (/bankruptcy/gi.test(recordsText)) {
+        const bankruptcyMatch = recordsText.match(/(?:Chapter\s*(\d+))?.*?(\d{2}\/\d{2}\/\d{4})/);
+        if (bankruptcyMatch) {
+          publicRecords.push({
+            id: this.generateUUID(),
+            type: 'bankruptcy',
+            status: 'discharged',
+            date_filed: bankruptcyMatch[2],
+            amount: null
+          });
+        }
+      }
+      
+      // Look for liens
+      if (/lien/gi.test(recordsText)) {
+        publicRecords.push({
+          id: this.generateUUID(),
+          type: 'tax_lien',
+          status: 'active',
+          date_filed: new Date().toISOString().split('T')[0],
+          amount: null
+        });
+      }
+    }
+    
+    return publicRecords;
   }
 
   /**
    * Identify violations in the credit data
    */
-  private static identifyViolations(extractedData: any): Violation[] {
+  private static identifyViolations(extractedData: ExtractedData): Violation[] {
     const violations: Violation[] = [];
 
     // Check for common FCRA violations
@@ -642,921 +715,84 @@ export class CreditReportAnalysisService {
         });
       }
     }
-
+    
     return violations;
   }
 
-  /**
-   * Get mock credit report text for testing
-   */
-  private static getMockCreditReportText(): string {
-    return `
-    CREDIT REPORT
-    Name: John Doe
-    SSN: 123-45-6789
-    Date of Birth: 01/15/1985
-    Address: 123 Main St, Anytown, USA
-    
-    ACCOUNTS:
-    Account: 1234567890123456
-    Creditor: Chase Bank
-    Type: Credit Card
-    Status: Open
-    Credit Limit: $10,000
-    Current Balance: $2,500
-    Payment Status: Current
-    
-    Account: 9876543210987654
-    Creditor: American Express
-    Type: Credit Card
-    Status: Late
-    Credit Limit: $15,000
-    Current Balance: $8,500
-    Payment Status: Past Due
-    
-    INQUIRIES:
-    Chase Bank - 01/10/2024 - Credit Card Application
-    
-    PUBLIC RECORDS:
-    None found
-    `;
-  }
-
-  /**
-   * Get mock credit data for testing
-   */
-  private static getMockCreditData(): any {
+  private static getMockCreditData(): ExtractedData {
     return {
       personalInfo: {
         name: 'John Doe',
-        ssn: '***-**-1234',
+        ssn: '123-45-6789',
         address: '123 Main St, Anytown, USA',
-        dateOfBirth: '1985-01-15'
+        phone: '555-1234'
       },
-      accounts: [
-        {
-          id: this.generateUUID(),
-          creditor_name: 'Chase Bank',
-          account_number: '****1234',
-          account_type: 'credit_card',
-          account_status: 'open',
-          current_balance: 2500,
-          credit_limit: 10000,
-          date_opened: '2020-01-15',
-          date_reported: '2024-01-15',
-          payment_history: 'OK'
-        },
-        {
-          id: this.generateUUID(),
-          creditor_name: 'Wells Fargo',
-          account_number: '****5678',
-          account_type: 'credit_card',
-          account_status: 'late',
-          current_balance: 15000,
-          credit_limit: 20000,
-          date_opened: '2019-06-10',
-          date_reported: '2024-01-15',
-          payment_history: '30 days late'
-        }
-      ],
-      inquiries: [
-        {
-          id: this.generateUUID(),
-          creditor_name: 'Capital One',
-          date: '2024-01-10',
-          type: 'hard'
-        }
-      ],
+      accounts: [],
+      inquiries: [],
       publicRecords: []
     };
   }
 
-  /**
-   * Generate a proper UUID for database records
-   */
+  private static getMockCreditReportText(): string {
+    return `
+    CREDIT REPORT - JOHN DOE
+    
+    PERSONAL INFORMATION:
+    Name: John Doe
+    SSN: XXX-XX-1234
+    Address: 123 Main Street, Anytown, ST 12345
+    Date of Birth: 01/01/1980
+    
+    ACCOUNT INFORMATION:
+    
+    ACCOUNT #1:
+    Creditor: Chase Bank USA, N.A.
+    Account Number: ****1234
+    Account Type: Credit Card
+    Balance: $1,250
+    Credit Limit: $5,000
+    Payment Status: Current
+    Date Opened: 01/15/2020
+    Date Reported: 01/15/2024
+    Payment History: CCCCCCCCCCCCCCCCCCCCCCC
+    
+    ACCOUNT #2:
+    Creditor: Bank of America
+    Account Number: ****5678
+    Account Type: Auto Loan
+    Balance: $8,500
+    Credit Limit: $15,000
+    Payment Status: Current
+    Date Opened: 06/10/2022
+    Date Reported: 01/15/2024
+    Payment History: CCCCCCCCCCCCCCCCCCCCCCC
+    
+    ACCOUNT #3:
+    Creditor: Wells Fargo
+    Account Number: ****9012
+    Account Type: Mortgage
+    Balance: $185,000
+    Credit Limit: $200,000
+    Payment Status: Current
+    Date Opened: 03/20/2021
+    Date Reported: 01/15/2024
+    Payment History: CCCCCCCCCCCCCCCCCCCCCCC
+    
+    INQUIRIES:
+    Chase Bank - Credit Card - 01/10/2024
+    Bank of America - Auto Loan - 06/05/2022
+    Wells Fargo - Mortgage - 03/15/2021
+    
+    PUBLIC RECORDS:
+    No public records found.
+    `;
+  }
+
   private static generateUUID(): string {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
       const r = Math.random() * 16 | 0;
       const v = c === 'x' ? r : (r & 0x3 | 0x8);
       return v.toString(16);
     });
-  }
-
-  /**
-   * Enhanced negative item detection from text
-   */
-  private static extractNegativeItemsFromText(text: string): NegativeItem[] {
-    console.log('Extracting negative items with enhanced detection...');
-    
-    const negativeItems: NegativeItem[] = [];
-    const processedItems = new Set<string>();
-    
-    // Enhanced patterns for negative items
-    const negativePatterns = {
-      latePayments: /(?:LATE|PAST\s*DUE|\d+\s*DAYS?\s*LATE|30\s*DAYS|60\s*DAYS|90\s*DAYS|120\s*DAYS)/gi,
-      collections: /(?:COLLECTION|COLLECTED|COLLECTOR|PLACED\s*FOR\s*COLLECTION)/gi,
-      chargeOffs: /(?:CHARGE\s*OFF|CHARGED\s*OFF|WRITE\s*OFF|PROFIT\s*AND\s*LOSS)/gi,
-      bankruptcies: /(?:BANKRUPTCY|CHAPTER\s*[7|11|13]|BK|DISCHARGED)/gi,
-      judgments: /(?:JUDGMENT|CIVIL\s*JUDGMENT|COURT\s*JUDGMENT)/gi,
-      repossessions: /(?:REPOSSESSION|REPO|VOLUNTARY\s*SURRENDER)/gi,
-      foreclosures: /(?:FORECLOSURE|FORECLOSED|DEED\s*IN\s*LIEU)/gi,
-      taxLiens: /(?:TAX\s*LIEN|IRS\s*LIEN|STATE\s*LIEN)/gi
-    };
-    
-    // Context patterns to extract account information
-    const contextPatterns = {
-      accountNumber: /(?:ACCOUNT|ACCT)[:\s#]*([A-Z0-9]{4,20})/gi,
-      creditorName: /([A-Z][A-Za-z\s&.,-]{3,50})(?:\s+(?:BANK|CREDIT|CARD|FINANCIAL|SERVICES|CORP|INC|LLC))?/gi,
-      amount: /(?:AMOUNT|BALANCE|OWED)[:\s]*\$?([\d,]+\.?\d*)/gi,
-      dateReported: /(?:REPORTED|DATE)[:\s]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/gi,
-      status: /(?:STATUS)[:\s]*(ACTIVE|CLOSED|PAID|DISPUTED|VERIFIED)/gi
-    };
-    
-    try {
-      // Process each negative item type
-      Object.entries(negativePatterns).forEach(([itemType, pattern]) => {
-        let match;
-        pattern.lastIndex = 0; // Reset regex
-        
-        while ((match = pattern.exec(text)) !== null) {
-          try {
-            const matchPosition = match.index;
-            const itemKey = `${itemType}_${matchPosition}`;
-            
-            if (processedItems.has(itemKey)) continue;
-            processedItems.add(itemKey);
-            
-            // Extract context around the match (500 characters before and after)
-            const contextStart = Math.max(0, matchPosition - 500);
-            const contextEnd = Math.min(text.length, matchPosition + 500);
-            const context = text.substring(contextStart, contextEnd);
-            
-            // Extract account details from context
-            const accountMatch = context.match(contextPatterns.accountNumber);
-            const creditorMatch = context.match(contextPatterns.creditorName);
-            const amountMatch = context.match(contextPatterns.amount);
-            const dateMatch = context.match(contextPatterns.dateReported);
-            const statusMatch = context.match(contextPatterns.status);
-            
-            // Parse amount
-            const parseAmount = (match: RegExpMatchArray | null): number | null => {
-              if (!match || !match[1]) return null;
-              const numStr = match[1].replace(/[,$]/g, '');
-              const amount = parseFloat(numStr);
-              return isNaN(amount) ? null : amount;
-            };
-            
-            // Parse date
-            const parseDate = (match: RegExpMatchArray | null): string | null => {
-              if (!match || !match[1]) return null;
-              try {
-                const dateStr = match[1].replace(/[-]/g, '/');
-                const date = new Date(dateStr);
-                return isNaN(date.getTime()) ? null : date.toISOString().split('T')[0];
-              } catch {
-                return null;
-              }
-            };
-            
-                         // Map item type to database enum
-             const mapItemType = (type: string): NegativeItem['item_type'] => {
-               switch (type) {
-                 case 'latePayments': return 'late_payment';
-                 case 'collections': return 'collection';
-                 case 'chargeOffs': return 'charge_off';
-                 case 'bankruptcies': return 'bankruptcy';
-                 case 'judgments': return 'judgment';
-                 case 'repossessions': return 'repossession';
-                 case 'foreclosures': return 'foreclosure';
-                 case 'taxLiens': return 'tax_lien';
-                 default: return 'inquiry'; // Use valid enum value
-               }
-             };
-            
-            // Detect credit bureaus from context
-            const creditBureaus: string[] = [];
-            if (/EQUIFAX|EFX/gi.test(context)) creditBureaus.push('equifax');
-            if (/EXPERIAN|EXP/gi.test(context)) creditBureaus.push('experian');
-            if (/TRANS\s*UNION|TU/gi.test(context)) creditBureaus.push('transunion');
-            
-            if (creditBureaus.length === 0) {
-              creditBureaus.push('unknown');
-            }
-            
-                         const negativeItem: NegativeItem = {
-               id: this.generateUUID(),
-               credit_account_id: '', // Will be set when saving
-               item_type: mapItemType(itemType),
-               creditor_name: creditorMatch?.[1]?.trim() || 'Unknown Creditor',
-               account_number: accountMatch?.[1] || null,
-               original_balance: parseAmount(amountMatch),
-               date_reported: parseDate(dateMatch),
-               status: statusMatch?.[1]?.toLowerCase() || 'active',
-               created_at: new Date().toISOString(),
-               updated_at: new Date().toISOString()
-             };
-            
-            negativeItems.push(negativeItem);
-            console.log(`Found negative item: ${negativeItem.item_type} - ${negativeItem.creditor_name}`);
-            
-          } catch (itemError) {
-            console.warn(`Error processing negative item:`, itemError);
-          }
-        }
-      });
-      
-    } catch (error) {
-      console.error('Error in extractNegativeItemsFromText:', error);
-    }
-    
-    console.log(`Extracted ${negativeItems.length} negative items`);
-    return negativeItems;
-  }
-
-  /**
-   * Enhanced FCRA violation detection
-   */
-  private static detectEnhancedViolations(accounts: CreditAccount[], negativeItems: NegativeItem[]): Violation[] {
-    console.log('Detecting enhanced FCRA violations...');
-    
-    const violations: Violation[] = [];
-    
-    try {
-      // 1. Check for duplicate accounts across bureaus
-      const accountGroups = new Map<string, CreditAccount[]>();
-      accounts.forEach(account => {
-        const key = `${account.creditor_name}_${account.account_type}_${account.account_number?.substring(-4)}`;
-        if (!accountGroups.has(key)) {
-          accountGroups.set(key, []);
-        }
-        accountGroups.get(key)!.push(account);
-      });
-      
-      accountGroups.forEach((group, key) => {
-        if (group.length > 1) {
-                     violations.push({
-             id: this.generateUUID(),
-             credit_account_id: group[0].id,
-             violation_type: 'fcra_violation',
-             violation_description: `Duplicate account reported: ${key}`,
-             severity: 'medium',
-             created_at: new Date().toISOString(),
-             updated_at: new Date().toISOString()
-           });
-        }
-      });
-      
-      // 2. Check for outdated negative items (over 7 years)
-      const sevenYearsAgo = new Date();
-      sevenYearsAgo.setFullYear(sevenYearsAgo.getFullYear() - 7);
-      
-               negativeItems.forEach(item => {
-           if (item.date_reported) {
-             const reportedDate = new Date(item.date_reported);
-             if (reportedDate < sevenYearsAgo && item.item_type !== 'bankruptcy') {
-               violations.push({
-                 id: this.generateUUID(),
-                 negative_item_id: item.id,
-                 violation_type: 'fcra_violation',
-                 violation_description: `Negative item beyond 7-year reporting limit: ${item.item_type}`,
-                 severity: 'high',
-                 created_at: new Date().toISOString(),
-                 updated_at: new Date().toISOString()
-               });
-             }
-           }
-         });
-      
-      // 3. Check for bankruptcy beyond 10 years
-      const tenYearsAgo = new Date();
-      tenYearsAgo.setFullYear(tenYearsAgo.getFullYear() - 10);
-      
-      negativeItems.filter(item => item.item_type === 'bankruptcy').forEach(item => {
-        if (item.date_reported) {
-          const reportedDate = new Date(item.date_reported);
-          if (reportedDate < tenYearsAgo) {
-            violations.push({
-              id: this.generateUUID(),
-              user_id: '', // Will be set when saving
-              credit_report_id: '', // Will be set when saving
-              violation_type: 'outdated_information',
-              description: `Bankruptcy beyond 10-year reporting limit`,
-              creditor_name: item.creditor_name,
-              account_number: item.account_number,
-              severity: 'high',
-              credit_bureaus: item.credit_bureaus,
-              status: 'active',
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString()
-            });
-          }
-        }
-      });
-      
-      // 4. Check for accounts missing required information
-      accounts.forEach(account => {
-        const missingFields: string[] = [];
-        
-        if (!account.date_opened) missingFields.push('date opened');
-        if (!account.date_reported) missingFields.push('date reported');
-        if (account.balance === 0 && account.credit_limit === 0) missingFields.push('balance information');
-        if (!account.payment_status || account.payment_status === 'unknown') missingFields.push('payment status');
-        
-        if (missingFields.length > 1) { // Only flag if multiple fields missing
-          violations.push({
-            id: this.generateUUID(),
-            user_id: '', // Will be set when saving
-            credit_report_id: '', // Will be set when saving
-            violation_type: 'incomplete_information',
-            description: `Account missing required information: ${missingFields.join(', ')}`,
-            creditor_name: account.creditor_name,
-            account_number: account.account_number,
-            severity: 'low',
-            credit_bureaus: account.credit_bureaus,
-            status: 'active',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          });
-        }
-      });
-      
-      // 5. Check for inaccurate balance information
-      accounts.forEach(account => {
-        if (account.balance && account.credit_limit && account.balance > account.credit_limit) {
-          violations.push({
-            id: this.generateUUID(),
-            user_id: '', // Will be set when saving
-            credit_report_id: '', // Will be set when saving
-            violation_type: 'inaccurate_information',
-            description: `Balance exceeds credit limit: $${account.balance} > $${account.credit_limit}`,
-            creditor_name: account.creditor_name,
-            account_number: account.account_number,
-            severity: 'medium',
-            credit_bureaus: account.credit_bureaus,
-            status: 'active',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          });
-        }
-      });
-      
-    } catch (error) {
-      console.error('Error detecting FCRA violations:', error);
-    }
-    
-    console.log(`Detected ${violations.length} FCRA violations`);
-    return violations;
-  }
-
-  /**
-   * Enhanced PDF text extraction and analysis for Phase 2
-   */
-  static async enhancedAnalyzeCreditReport(fileUrl: string, reportId: string, extractedText?: string): Promise<AnalysisResult> {
-    try {
-      console.log('Starting enhanced Phase 2 credit report analysis...');
-      console.log('Report ID:', reportId);
-      console.log('Extracted text provided:', !!extractedText, 'Length:', extractedText?.length || 0);
-      
-      // Step 1: Determine if we have real PDF text or should use mock data
-      let analysisText = extractedText;
-      let isRealData = false;
-      
-      if (extractedText && 
-          extractedText.length > 200 && 
-          !extractedText.startsWith('PDF_PROCESSED') &&
-          extractedText !== 'PDF_PROCESSED') {
-        
-        console.log('Using real extracted PDF text for enhanced analysis');
-        analysisText = extractedText;
-        isRealData = true;
-        
-        // Log sample of real text for debugging
-        console.log('Sample of real text:', extractedText.substring(0, 500));
-        
-      } else {
-        console.log('Using enhanced mock data for analysis');
-        analysisText = this.getEnhancedMockCreditReportText();
-        isRealData = false;
-      }
-      
-      // Step 2: Enhanced data extraction
-      console.log('Performing enhanced data extraction...');
-      const extractedData = await this.performEnhancedExtraction(analysisText!, isRealData);
-      
-      // Step 3: Enhanced analysis and violation detection
-      console.log('Performing enhanced analysis...');
-      const analysis = await this.performEnhancedAnalysis(extractedData, reportId);
-      
-      // Step 4: Generate enhanced summary with credit score impact
-      console.log('Generating enhanced summary...');
-      const enhancedSummary = this.generateEnhancedSummary(analysis, isRealData);
-      
-      // Step 5: Save to database
-      console.log('Saving enhanced analysis to database...');
-      await this.saveAnalysisResults(reportId, analysis, enhancedSummary);
-      
-      console.log('Enhanced Phase 2 analysis completed successfully');
-      
-      return {
-        creditReport: analysis.creditReport,
-        accounts: analysis.accounts,
-        negativeItems: analysis.negativeItems,
-        violations: analysis.violations,
-        summary: enhancedSummary
-      };
-      
-    } catch (error) {
-      console.error('Enhanced credit report analysis failed:', error);
-      throw new Error(`Enhanced analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-
-  /**
-   * Enhanced mock credit report text for better testing
-   */
-  private static getEnhancedMockCreditReportText(): string {
-    return `
-CREDIT REPORT - ENHANCED ANALYSIS
-Consumer Information:
-Name: John Doe
-Address: 123 Main Street, Anytown, ST 12345
-SSN: XXX-XX-1234
-Date of Birth: 01/01/1980
-Report Date: ${new Date().toLocaleDateString()}
-
-EQUIFAX CREDIT REPORT
-=====================================
-
-TRADE LINES / CREDIT ACCOUNTS:
-
-ACCOUNT #1: Chase Visa Credit Card
-Account Number: 1234567890123456
-Creditor: Chase Bank USA, N.A.
-Account Type: Credit Card (Revolving)
-Date Opened: 01/15/2020
-Date Reported: ${new Date().toLocaleDateString()}
-Credit Limit: $5,000.00
-Current Balance: $1,250.00
-Payment Status: Current
-Payment History: CCCCCCCCCCCCCCCCCCCCCCC
-High Credit: $2,100.00
-Account Status: Open
-
-ACCOUNT #2: Wells Fargo Auto Loan  
-Account Number: WF789012345678
-Creditor: Wells Fargo Bank, N.A.
-Account Type: Auto Loan (Installment)
-Date Opened: 03/10/2021
-Date Reported: ${new Date().toLocaleDateString()}
-Original Amount: $25,000.00
-Current Balance: $18,500.00
-Payment Status: Current
-Payment History: CCCCCCCCCCCCCCCCCCCCCCC
-Monthly Payment: $420.00
-Account Status: Open
-
-ACCOUNT #3: Capital One Credit Card
-Account Number: CO456789012345
-Creditor: Capital One Bank (USA), N.A.
-Account Type: Credit Card (Revolving)
-Date Opened: 06/05/2019
-Date Reported: ${new Date().toLocaleDateString()}
-Credit Limit: $3,000.00
-Current Balance: $2,850.00
-Payment Status: 30 Days Late
-Payment History: CCC1CCCCCCCCCCCCCCCCCCC
-High Credit: $3,000.00
-Account Status: Open
-
-ACCOUNT #4: Discover Student Loan
-Account Number: DL987654321098
-Creditor: Discover Bank
-Account Type: Student Loan (Installment)
-Date Opened: 08/15/2018
-Date Reported: ${new Date().toLocaleDateString()}
-Original Amount: $15,000.00
-Current Balance: $12,500.00
-Payment Status: Current
-Payment History: CCCCCCCCCCCCCCCCCCCCCCCC
-Monthly Payment: $145.00
-Account Status: Open
-
-NEGATIVE ITEMS:
-=====================================
-
-COLLECTION ACCOUNT:
-Collection Agency: ABC Collections Inc.
-Original Creditor: Best Buy Store Card
-Account Number: BB987654321
-Original Balance: $850.00
-Current Balance: $850.00
-Date Placed for Collection: 02/15/2022
-Date Reported: ${new Date().toLocaleDateString()}
-Status: Active Collection
-
-CHARGE OFF:
-Creditor: XYZ Credit Services
-Account Number: XYZ123456789
-Original Balance: $2,500.00
-Date of Charge Off: 08/20/2021
-Date Reported: ${new Date().toLocaleDateString()}
-Status: Charged Off - Written Off
-
-LATE PAYMENTS:
-Multiple 30-day late payments on Capital One account
-60-day late payment on previous Macy's account (closed)
-90-day late payment on previous Target account (closed)
-
-CREDIT INQUIRIES:
-=====================================
-Hard Inquiries (Last 24 months):
-- Chase Bank (Credit Card Application) - 03/15/2023
-- Wells Fargo (Auto Loan Application) - 03/10/2021
-- Capital One (Credit Card Application) - 01/10/2023
-
-Soft Inquiries (Monitoring):
-- Credit Karma (Account Review) - Monthly
-- Experian (Consumer Disclosure) - 12/01/2023
-
-PUBLIC RECORDS:
-=====================================
-No bankruptcies, liens, or judgments reported.
-
-FCRA COMPLIANCE ISSUES DETECTED:
-=====================================
-1. Capital One account showing duplicate entries across bureaus
-2. Collection account missing original creditor contact information
-3. Charge off account beyond optimal reporting period
-4. Late payment entries lacking proper date verification
-5. Credit limit information inconsistent across reporting periods
-
-EXPERIAN CREDIT REPORT
-=====================================
-[Similar format with slight variations for cross-bureau comparison]
-
-TRANSUNION CREDIT REPORT  
-=====================================
-[Similar format with slight variations for cross-bureau comparison]
-
-END OF ENHANCED CREDIT REPORT
-`;
-  }
-
-  /**
-   * Perform enhanced data extraction with better pattern recognition
-   */
-  private static async performEnhancedExtraction(text: string, isRealData: boolean): Promise<ExtractedData> {
-    console.log('Performing enhanced extraction, isRealData:', isRealData);
-    
-    if (isRealData) {
-      // Use enhanced real-data extraction
-      return {
-        personalInfo: this.extractEnhancedPersonalInfo(text),
-        accounts: this.extractEnhancedAccounts(text),
-        inquiries: this.extractEnhancedInquiries(text),
-        publicRecords: this.extractEnhancedPublicRecords(text)
-      };
-    } else {
-      // Use enhanced mock data
-      return this.getEnhancedMockCreditData();
-    }
-  }
-
-  /**
-   * Enhanced personal info extraction
-   */
-  private static extractEnhancedPersonalInfo(text: string): PersonalInfo {
-    const patterns = {
-      name: /(?:Consumer|Name|Applicant)[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/gi,
-      address: /(?:Address|Addr)[:\s]*([0-9]+[^,\n]+(?:,\s*[^,\n]+)*)/gi,
-      ssn: /(?:SSN|Social\s*Security)[:\s]*([X\d]{3}[-\s]?[X\d]{2}[-\s]?[X\d]{4})/gi,
-      phone: /(?:Phone|Tel)[:\s]*(\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})/gi
-    };
-
-    const nameMatch = text.match(patterns.name);
-    const addressMatch = text.match(patterns.address);
-    const ssnMatch = text.match(patterns.ssn);
-    const phoneMatch = text.match(patterns.phone);
-
-    return {
-      name: nameMatch?.[1]?.trim() || undefined,
-      address: addressMatch?.[1]?.trim() || undefined,
-      ssn: ssnMatch?.[1]?.trim() || undefined,
-      phone: phoneMatch?.[1]?.trim() || undefined
-    };
-  }
-
-  /**
-   * Enhanced accounts extraction with better pattern matching
-   */
-  private static extractEnhancedAccounts(text: string): CreditAccount[] {
-    // This uses the existing enhanced extractAccounts method
-    return this.extractAccounts(text);
-  }
-
-  /**
-   * Enhanced inquiries extraction
-   */
-  private static extractEnhancedInquiries(text: string): any[] {
-    const inquiries: any[] = [];
-    const inquiryPattern = /(?:INQUIRY|INQUIRIES)[\s\S]*?(?=(?:ACCOUNT|PUBLIC|$))/gi;
-    const inquiryMatch = text.match(inquiryPattern);
-    
-    if (inquiryMatch) {
-      const inquiryText = inquiryMatch[0];
-      const lines = inquiryText.split('\n');
-      
-      lines.forEach(line => {
-        const match = line.match(/([A-Z][A-Za-z\s&]+)\s*\(([^)]+)\)\s*-\s*(\d{2}\/\d{2}\/\d{4})/);
-        if (match) {
-          inquiries.push({
-            id: this.generateUUID(),
-            creditor_name: match[1].trim(),
-            inquiry_type: match[2].toLowerCase().replace(' ', '_'),
-            inquiry_date: match[3]
-          });
-        }
-      });
-    }
-    
-    return inquiries;
-  }
-
-  /**
-   * Enhanced public records extraction
-   */
-  private static extractEnhancedPublicRecords(text: string): any[] {
-    const records: any[] = [];
-    const publicRecordsPattern = /(?:PUBLIC\s*RECORDS)[\s\S]*?(?=(?:ACCOUNT|INQUIRY|$))/gi;
-    const recordsMatch = text.match(publicRecordsPattern);
-    
-    if (recordsMatch) {
-      const recordsText = recordsMatch[0];
-      
-      // Look for bankruptcy
-      if (/bankruptcy/gi.test(recordsText)) {
-        const bankruptcyMatch = recordsText.match(/(?:Chapter\s*(\d+))?.*?(\d{2}\/\d{2}\/\d{4})/);
-        if (bankruptcyMatch) {
-          records.push({
-            id: this.generateUUID(),
-            type: 'bankruptcy',
-            status: 'discharged',
-            date_filed: bankruptcyMatch[2],
-            amount: null
-          });
-        }
-      }
-      
-      // Look for liens
-      if (/lien/gi.test(recordsText)) {
-        records.push({
-          id: this.generateUUID(),
-          type: 'tax_lien',
-          status: 'active',
-          date_filed: new Date().toISOString().split('T')[0],
-          amount: null
-        });
-      }
-    }
-    
-    return records;
-  }
-
-  /**
-   * Enhanced mock credit data
-   */
-  private static getEnhancedMockCreditData(): ExtractedData {
-    return {
-      personalInfo: {
-        name: 'John Doe',
-        ssn: 'XXX-XX-1234',
-        address: '123 Main Street, Anytown, ST 12345',
-        phone: '(555) 123-4567'
-      },
-      accounts: [
-        {
-          id: this.generateUUID(),
-          credit_report_id: '',
-          account_number: '1234567890123456',
-          creditor_name: 'Chase Bank USA, N.A.',
-          account_type: 'credit_card',
-          current_balance: 1250,
-          credit_limit: 5000,
-          payment_status: 'current',
-          account_status: 'open',
-          date_opened: '2020-01-15',
-          date_reported: new Date().toISOString().split('T')[0],
-          payment_history: 'CCCCCCCCCCCCCCCCCCCCCCC',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        },
-        {
-          id: this.generateUUID(),
-          credit_report_id: '',
-          account_number: 'WF789012345678',
-          creditor_name: 'Wells Fargo Bank, N.A.',
-          account_type: 'auto_loan',
-          current_balance: 18500,
-          credit_limit: 25000,
-          payment_status: 'current',
-          account_status: 'open',
-          date_opened: '2021-03-10',
-          date_reported: new Date().toISOString().split('T')[0],
-          payment_history: 'CCCCCCCCCCCCCCCCCCCCCCC',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        },
-        {
-          id: this.generateUUID(),
-          credit_report_id: '',
-          account_number: 'CO456789012345',
-          creditor_name: 'Capital One Bank (USA), N.A.',
-          account_type: 'credit_card',
-          current_balance: 2850,
-          credit_limit: 3000,
-          payment_status: '30_days_late',
-          account_status: 'open',
-          date_opened: '2019-06-05',
-          date_reported: new Date().toISOString().split('T')[0],
-          payment_history: 'CCC1CCCCCCCCCCCCCCCCCCC',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }
-      ],
-      inquiries: [
-        {
-          id: this.generateUUID(),
-          creditor_name: 'Chase Bank',
-          inquiry_date: '2023-03-15',
-          inquiry_type: 'credit_card'
-        },
-        {
-          id: this.generateUUID(),
-          creditor_name: 'Wells Fargo',
-          inquiry_date: '2021-03-10',
-          inquiry_type: 'auto_loan'
-        }
-      ],
-      publicRecords: []
-    };
-  }
-
-  /**
-   * Perform enhanced analysis with better violation detection
-   */
-  private static async performEnhancedAnalysis(extractedData: ExtractedData, reportId: string): Promise<{
-    creditReport: CreditReport;
-    accounts: CreditAccount[];
-    negativeItems: NegativeItem[];
-    violations: Violation[];
-  }> {
-    console.log('Performing enhanced analysis...');
-    
-    // Create credit report record
-    const creditReport: CreditReport = {
-      id: reportId,
-      user_id: '', // Will be set when saving
-      file_name: 'Enhanced Analysis',
-      file_url: '',
-      file_size: 0,
-      file_type: 'application/pdf',
-      status: 'processed',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    };
-    
-    // Process accounts and identify negative items
-    const accounts = extractedData.accounts;
-    const negativeItems: NegativeItem[] = [];
-    
-    // Enhanced negative item detection
-    accounts.forEach(account => {
-      if (account.payment_status && 
-          ['late', '30_days_late', '60_days_late', '90_days_late', 'charge_off', 'collection'].includes(account.payment_status)) {
-        
-        negativeItems.push({
-          id: this.generateUUID(),
-          credit_account_id: account.id,
-          item_type: account.payment_status.includes('late') ? 'late_payment' : 
-                     account.payment_status === 'charge_off' ? 'charge_off' : 'collection',
-          creditor_name: account.creditor_name,
-          account_number: account.account_number,
-          original_balance: account.current_balance,
-          date_reported: account.date_reported,
-          status: 'active',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        });
-      }
-    });
-    
-    // Enhanced violation detection
-    const violations = this.identifyEnhancedViolations(accounts, negativeItems);
-    
-    return {
-      creditReport,
-      accounts,
-      negativeItems,
-      violations
-    };
-  }
-
-  /**
-   * Enhanced violation detection
-   */
-  private static identifyEnhancedViolations(accounts: CreditAccount[], negativeItems: NegativeItem[]): Violation[] {
-    const violations: Violation[] = [];
-    
-    // Check for high utilization
-    accounts.forEach(account => {
-      if (account.account_type === 'credit_card' && 
-          account.current_balance && account.credit_limit) {
-        const utilization = account.current_balance / account.credit_limit;
-        if (utilization > 0.9) {
-          violations.push({
-            id: this.generateUUID(),
-            credit_account_id: account.id,
-            violation_type: 'other',
-            violation_description: `High credit utilization: ${Math.round(utilization * 100)}%`,
-            severity: 'medium',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          });
-        }
-      }
-    });
-    
-    // Check for outdated negative items
-    const sevenYearsAgo = new Date();
-    sevenYearsAgo.setFullYear(sevenYearsAgo.getFullYear() - 7);
-    
-    negativeItems.forEach(item => {
-      if (item.date_reported) {
-        const reportedDate = new Date(item.date_reported);
-        if (reportedDate < sevenYearsAgo) {
-          violations.push({
-            id: this.generateUUID(),
-            negative_item_id: item.id,
-            violation_type: 'fcra_violation',
-            violation_description: `Negative item beyond 7-year reporting limit`,
-            severity: 'high',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          });
-        }
-      }
-    });
-    
-    return violations;
-  }
-
-  /**
-   * Generate enhanced summary with credit score impact
-   */
-  private static generateEnhancedSummary(analysis: any, isRealData: boolean): any {
-    const { accounts, negativeItems, violations } = analysis;
-    
-    // Calculate credit utilization
-    const creditCards = accounts.filter((acc: any) => acc.account_type === 'credit_card');
-    const totalLimit = creditCards.reduce((sum: number, acc: any) => sum + (acc.credit_limit || 0), 0);
-    const totalBalance = creditCards.reduce((sum: number, acc: any) => sum + (acc.current_balance || 0), 0);
-    const utilization = totalLimit > 0 ? totalBalance / totalLimit : 0;
-    
-    // Estimate credit score impact
-    let scoreImpact = 0;
-    negativeItems.forEach((item: any) => {
-      switch (item.item_type) {
-        case 'late_payment': scoreImpact += 15; break;
-        case 'collection': scoreImpact += 50; break;
-        case 'charge_off': scoreImpact += 70; break;
-        case 'bankruptcy': scoreImpact += 150; break;
-      }
-    });
-    
-    if (utilization > 0.3) scoreImpact += Math.floor((utilization - 0.3) * 100);
-    
-    // Generate recommendations
-    const recommendations: string[] = [];
-    if (negativeItems.length > 0) {
-      recommendations.push('Dispute inaccurate negative items to improve credit score');
-    }
-    if (utilization > 0.3) {
-      recommendations.push('Reduce credit card balances to lower utilization ratio');
-    }
-    if (violations.length > 0) {
-      recommendations.push('Address FCRA violations through dispute letters');
-    }
-    
-    return {
-      totalAccounts: accounts.length,
-      negativeItemsCount: negativeItems.length,
-      violationsCount: violations.length,
-      estimatedScoreImpact: Math.min(scoreImpact, 200),
-      potentialScoreImprovement: Math.floor(scoreImpact * 0.7),
-      creditUtilization: Math.round(utilization * 100),
-      recommendedActions: recommendations,
-      isRealData: isRealData,
-      analysisQuality: isRealData ? 'Real PDF Data' : 'Enhanced Mock Data'
-    };
   }
 }

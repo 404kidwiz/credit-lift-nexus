@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { NavigationHeader } from '@/components/NavigationHeader';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -36,10 +36,27 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
-import { CreditReport, CreditAccount, NegativeItem, Violation } from '@/lib/types/credit-reports';
+import {
+  CreditReport,
+  CreditAccount,
+  NegativeItem,
+  Violation,
+  ParsedCreditReportData,
+} from '@/lib/types/credit-reports';
 import { DisputeLetterGenerator } from '@/lib/services/disputeLetterGenerator';
 import { useAuth } from '@/contexts/AuthContext';
-import { useToast } from '@/hooks/use-toast';
+import { useToast } from '@/components/ui/use-toast';
+
+interface LocalCreditAccount {
+  creditor_name: string;
+  account_number: string;
+  account_type: string;
+  balance: number;
+  credit_limit: number;
+  status: string;
+  date_opened: string;
+  last_activity: string;
+}
 
 interface AnalysisData {
   creditReport: CreditReport;
@@ -73,22 +90,8 @@ const AnalysisResults: React.FC = () => {
   const [activeTab, setActiveTab] = useState('overview');
   const [availableRecords, setAvailableRecords] = useState<Array<{id: string, created_at: string}>>([]);
 
-  useEffect(() => {
-    if (reportId) {
-      loadAnalysisData(reportId);
-    }
-  }, [reportId]);
-
-  // Auto-redirect to most recent record if current ID is invalid
-  useEffect(() => {
-    if (error && availableRecords.length > 0 && !loading) {
-      const mostRecentRecord = availableRecords[0]; // Records are already sorted by created_at desc
-      console.log('Auto-redirecting to most recent record:', mostRecentRecord.id);
-      navigate(`/analysis/${mostRecentRecord.id}`, { replace: true });
-    }
-  }, [error, availableRecords, loading, navigate]);
-
-  const loadAnalysisData = async (id: string) => {
+  const loadAnalysisData = useCallback(async (id: string) => {
+    if (!user) return;
     try {
       setLoading(true);
       setError(null);
@@ -141,6 +144,8 @@ const AnalysisResults: React.FC = () => {
       console.log('Report Analysis:', reportAnalysis);
       console.log('Parsed Data:', reportAnalysis.parsed_data);
       console.log('Violations:', reportAnalysis.violations);
+      console.log('Raw violations type:', typeof reportAnalysis.violations);
+      console.log('Raw parsed_data type:', typeof reportAnalysis.parsed_data);
 
       // Parse the JSONB data with null checks
       const parsedData = reportAnalysis.parsed_data || {};
@@ -149,31 +154,37 @@ const AnalysisResults: React.FC = () => {
       // Log the parsed data structure
       console.log('Parsed Data (after null check):', parsedData);
       console.log('Violations (after null check):', violations);
+      console.log('Violations length:', violations.length);
+      console.log('First violation:', violations[0]);
       
-      // Extract accounts from parsed_data
-      const accounts: CreditAccount[] = (parsedData.accounts || []).map((account: any) => ({
-        id: account.account_number || `acc_${Math.random()}`,
+      // Extract accounts from parsed_data with better error handling
+      const parsedAccounts = (parsedData as { accounts?: LocalCreditAccount[] })?.accounts || [];
+      console.log('🔍 Parsed accounts from DB:', parsedAccounts);
+      
+      const accounts: CreditAccount[] = parsedAccounts.map((account: LocalCreditAccount, index: number) => ({
+        id: (account as any).id || account.account_number || `acc_${index}`,
         credit_report_id: reportAnalysis.id,
-        account_number: account.account_number || '',
-        account_type: account.account_type || '',
-        creditor_name: account.creditor_name || '',
-        account_status: account.status || '',
+        account_number: account.account_number || 'Unknown',
+        account_type: account.account_type || 'unknown',
+        creditor_name: account.creditor_name || 'Unknown Creditor',
+        account_status: account.status || 'unknown',
         date_opened: account.date_opened || '',
-        date_closed: account.date_closed || '',
+        date_closed: '',
         date_reported: account.last_activity || '',
         credit_limit: account.credit_limit || 0,
-        high_credit: account.high_credit || 0,
+        high_credit: 0,
         current_balance: account.balance || 0,
-        payment_status: account.payment_status || '',
-        payment_history: account.payment_history || '',
-        last_payment_date: account.last_payment_date || '',
-        last_payment_amount: account.last_payment_amount || 0,
-        account_holder: account.account_holder || '',
-        responsibility: account.responsibility || '',
-        raw_data: account,
+        payment_status: account.status || 'unknown',
+        payment_history: (account as any).payment_history || '',
+        last_payment_date: '',
+        last_payment_amount: 0,
+        account_holder: '',
+        responsibility: '',
         created_at: reportAnalysis.created_at,
         updated_at: reportAnalysis.updated_at
       }));
+      
+      console.log('✅ Processed accounts:', accounts);
       
       // Extract negative items from accounts with derogatory status
       const negativeItems: NegativeItem[] = accounts
@@ -196,7 +207,6 @@ const AnalysisResults: React.FC = () => {
           date_of_last_activity: account.date_reported || '',
           status: account.account_status || '',
           description: `${account.creditor_name} account with ${account.account_status} status`,
-          raw_data: account.raw_data,
           created_at: account.created_at,
           updated_at: account.updated_at
         }));
@@ -232,20 +242,29 @@ const AnalysisResults: React.FC = () => {
       };
 
       // Create a credit report object for compatibility
-      const creditReport = {
+      const creditReport: CreditReport = {
         id: reportAnalysis.id,
         user_id: reportAnalysis.user_id,
         file_name: reportAnalysis.pdf_url?.split('/').pop() || 'Credit Report',
         file_url: reportAnalysis.pdf_url || '',
         file_size: 0,
         file_type: 'pdf',
-        status: 'processed',
+        status: 'processed' as CreditReport['status'],
         processing_errors: [],
         raw_data: reportAnalysis.extracted_text || '',
         parsed_data: reportAnalysis.parsed_data || {},
         created_at: reportAnalysis.created_at,
         updated_at: reportAnalysis.updated_at
       };
+
+      console.log('🔄 Setting analysis data...');
+      console.log('📊 Final processed data:', {
+        creditReport,
+        accounts: accounts.length,
+        negativeItems: negativeItems.length,
+        violations: violations.length,
+        summary
+      });
 
       setAnalysisData({
         creditReport,
@@ -254,6 +273,8 @@ const AnalysisResults: React.FC = () => {
         violations,
         summary
       });
+      
+      console.log('✅ Analysis data set successfully!');
 
     } catch (error) {
       console.error('Failed to load analysis data:', error);
@@ -266,7 +287,22 @@ const AnalysisResults: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [user, toast]);
+
+  useEffect(() => {
+    if (reportId) {
+      loadAnalysisData(reportId);
+    }
+  }, [reportId, loadAnalysisData]);
+
+  // Auto-redirect to most recent record if current ID is invalid
+  useEffect(() => {
+    if (error && availableRecords.length > 0 && !loading) {
+      const mostRecentRecord = availableRecords[0]; // Records are already sorted by created_at desc
+      console.log('Auto-redirecting to most recent record:', mostRecentRecord.id);
+      navigate(`/analysis/${mostRecentRecord.id}`, { replace: true });
+    }
+  }, [error, availableRecords, loading, navigate]);
 
   const handleItemSelection = (itemId: string, type: 'negative' | 'violation') => {
     if (type === 'negative') {

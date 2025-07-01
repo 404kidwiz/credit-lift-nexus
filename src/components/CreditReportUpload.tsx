@@ -9,6 +9,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { FileUploadProgress, UploadedFile } from '@/lib/types/credit-reports';
 import { CreditReportAnalysisService } from '@/lib/services/creditReportAnalysis';
+import * as pdfjsLib from 'pdfjs-dist';
+import type { TextItem, TextMarkedContent } from 'pdfjs-dist/types/src/display/api';
 
 interface CreditReportUploadProps {
   onUploadComplete?: (file: UploadedFile) => void;
@@ -31,12 +33,8 @@ const extractTextFromPDF = async (file: File): Promise<string> => {
   console.log('Starting PDF text extraction for file:', file.name, 'Size:', file.size);
   
   try {
-    // Import PDF.js dynamically to avoid build-time issues
-    const pdfjsLib = await import('pdfjs-dist');
-    
-    // Configure PDF.js worker source using unpkg CDN with correct file extension
-    // The worker file is actually .mjs, not .js in version 5.3.31
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.3.31/build/pdf.worker.min.mjs`;
+    // Configure PDF.js worker source to use local file
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
     
     // Convert file to ArrayBuffer
     const arrayBuffer = await file.arrayBuffer();
@@ -77,7 +75,7 @@ const extractTextFromPDF = async (file: File): Promise<string> => {
           
           // Combine text items with proper spacing
           const pageText = textContent.items
-            .map((item: any) => {
+            .map((item: TextItem | TextMarkedContent) => {
               if ('str' in item) {
                 return item.str;
               }
@@ -174,7 +172,7 @@ export const CreditReportUpload: React.FC<CreditReportUploadProps> = ({
       }
 
       // Step 2: Upload file to Supabase Storage
-      const fileName = `${user.id}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+      const fileName = `credit-reports/${user.id}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
       console.log('Uploading to storage with filename:', fileName);
       
       updateUploadStatus(uploadIndex, 'uploading');
@@ -203,17 +201,15 @@ export const CreditReportUpload: React.FC<CreditReportUploadProps> = ({
       // Step 4: Create database record
       const insertData = {
         user_id: user.id,
-        file_name: file.name,
-        file_url: urlData.publicUrl,
-        file_size: file.size,
-        file_type: file.type,
-        status: 'uploaded'
+        pdf_url: urlData.publicUrl,
+        extracted_text: extractedText,
+        processed_at: new Date().toISOString()
       };
 
       console.log('Inserting into database:', insertData);
 
       const { data: reportData, error: dbError } = await supabase
-        .from('credit_reports')
+        .from('credit_reports_analysis')
         .insert(insertData)
         .select()
         .single();
@@ -249,22 +245,20 @@ export const CreditReportUpload: React.FC<CreditReportUploadProps> = ({
       
       try {
         console.log('Starting enhanced Phase 2 credit report analysis with extracted text...');
-        const analysisResult = await CreditReportAnalysisService.enhancedAnalyzeCreditReport(
+        const analysisResult = await CreditReportAnalysisService.analyzeCreditReport(
           urlData.publicUrl,
           reportData.id,
           extractedText // Pass the extracted text for enhanced processing
         );
         
         console.log('Enhanced Phase 2 analysis completed:', analysisResult);
-        console.log('Analysis quality:', analysisResult.summary.analysisQuality);
-        console.log('Real data detected:', analysisResult.summary.isRealData);
         
         updateUploadStatus(uploadIndex, 'analyzed');
         setAnalyzing(null);
         
         toast({
           title: "Enhanced Analysis Complete", 
-          description: `${analysisResult.summary.analysisQuality} - Found ${analysisResult.summary.negativeItemsCount} negative items and ${analysisResult.summary.violationsCount} violations.`,
+          description: `Found ${analysisResult.summary.negativeItemsCount} negative items and ${analysisResult.summary.violationsCount} violations.`,
         });
         
         // Wait for GCF webhook to process and create analysis record
@@ -325,7 +319,10 @@ export const CreditReportUpload: React.FC<CreditReportUploadProps> = ({
   }, [user, onUploadComplete, onAnalysisComplete, toast]);
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
+    console.log('CreditReportUpload: onDrop called with files:', acceptedFiles);
+    
     if (!user) {
+      console.log('CreditReportUpload: No user authenticated');
       toast({
         title: "Authentication Required",
         description: "Please sign in to upload credit reports.",
@@ -336,6 +333,11 @@ export const CreditReportUpload: React.FC<CreditReportUploadProps> = ({
 
     console.log('User authenticated:', user.id);
     console.log('Files to upload:', acceptedFiles.map(f => f.name));
+
+    if (acceptedFiles.length === 0) {
+      console.log('CreditReportUpload: No files accepted');
+      return;
+    }
 
     setIsUploading(true);
     const newUploads: FileUploadProgress[] = acceptedFiles.map(file => ({
@@ -398,7 +400,16 @@ export const CreditReportUpload: React.FC<CreditReportUploadProps> = ({
     },
     maxSize: MAX_FILE_SIZE,
     multiple: true,
-    disabled: isUploading
+    disabled: isUploading,
+    onDropAccepted: (files) => {
+      console.log('CreditReportUpload: Files accepted:', files.map(f => f.name));
+    },
+    onDropRejected: (rejectedFiles) => {
+      console.log('CreditReportUpload: Files rejected:', rejectedFiles);
+      rejectedFiles.forEach(rejection => {
+        console.log('Rejection reason:', rejection.errors);
+      });
+    }
   });
 
   const formatFileSize = (bytes: number) => {
@@ -459,7 +470,7 @@ export const CreditReportUpload: React.FC<CreditReportUploadProps> = ({
             ? 'border-red-500 bg-red-50' 
             : 'border-gray-300 hover:border-gray-400'
       }`}>
-        <div {...getRootProps()} className="text-center cursor-pointer">
+        <div {...getRootProps()} className="text-center cursor-pointer" onClick={() => console.log('CreditReportUpload: Upload area clicked')}>
           <input {...getInputProps()} />
           <Upload className="mx-auto h-12 w-12 text-gray-400 mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">

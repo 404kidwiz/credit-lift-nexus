@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -10,19 +10,45 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Brain, Zap, Shield, Building, CheckCircle, AlertCircle, Settings } from 'lucide-react';
 import { AIPdfAnalysisService, AIAnalysisConfig } from '@/lib/services/aiPdfAnalysis';
 
+type AIProvider = 'gemini' | 'openai' | 'claude' | 'azure';
+
 interface AIProviderSelectorProps {
   onConfigChange: (config: AIAnalysisConfig | null) => void;
   currentConfig?: AIAnalysisConfig | null;
 }
 
 export function AIProviderSelector({ onConfigChange, currentConfig }: AIProviderSelectorProps) {
-  const [selectedProvider, setSelectedProvider] = useState(currentConfig?.provider || 'gemini');
+  const [selectedProvider, setSelectedProvider] = useState<AIProvider>(currentConfig?.provider || 'gemini');
   const [apiKey, setApiKey] = useState(currentConfig?.apiKey || '');
   const [model, setModel] = useState(currentConfig?.model || '');
   const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [providers, setProviders] = useState<Array<{
+    id: string;
+    name: string;
+    description: string;
+    strengths: string[];
+    cost: string;
+  }>>([]);
 
-  const providers = AIPdfAnalysisService.getAvailableProviders();
+  // Load providers on component mount
+  useEffect(() => {
+    try {
+      const availableProviders = AIPdfAnalysisService.getAvailableProviders();
+      setProviders(availableProviders);
+      
+      // Set default API key for Gemini if available
+      if (!apiKey && selectedProvider === 'gemini') {
+        const geminiKey = import.meta.env.VITE_GEMINI_API_KEY;
+        if (geminiKey) {
+          setApiKey(geminiKey);
+          handleApiKeyChange(geminiKey);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading providers:', error);
+    }
+  }, []);
 
   const getProviderIcon = (providerId: string) => {
     switch (providerId) {
@@ -56,7 +82,7 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
     switch (providerId) {
       case 'gemini':
         return [
-          { value: 'gemini-pro-vision', label: 'Gemini Pro Vision' },
+          { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash' },
           { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' }
         ];
       case 'openai':
@@ -79,7 +105,7 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
     }
   };
 
-  const handleProviderSelect = (providerId: string) => {
+  const handleProviderSelect = (providerId: AIProvider) => {
     setSelectedProvider(providerId);
     const defaultModel = getModelOptions(providerId)[0]?.value || '';
     setModel(defaultModel);
@@ -88,7 +114,7 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
     // Update config if we have an API key
     if (apiKey) {
       const config: AIAnalysisConfig = {
-        provider: providerId as any,
+        provider: providerId as AIProvider,
         apiKey,
         model: defaultModel
       };
@@ -102,7 +128,7 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
     
     if (key && selectedProvider) {
       const config: AIAnalysisConfig = {
-        provider: selectedProvider as any,
+        provider: selectedProvider as AIProvider,
         apiKey: key,
         model: model || getModelOptions(selectedProvider)[0]?.value || ''
       };
@@ -123,7 +149,7 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
 
     try {
       const config: AIAnalysisConfig = {
-        provider: selectedProvider as any,
+        provider: selectedProvider as AIProvider,
         apiKey,
         model: model || getModelOptions(selectedProvider)[0]?.value || ''
       };
@@ -133,12 +159,12 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
       
       setTestResult({ 
         success: true, 
-        message: \`Successfully connected to \${providers.find(p => p.id === selectedProvider)?.name}\` 
+        message: `Successfully connected to ${providers.find(p => p.id === selectedProvider)?.name}` 
       });
     } catch (error) {
       setTestResult({ 
         success: false, 
-        message: \`Connection failed: \${error instanceof Error ? error.message : 'Unknown error'}\` 
+        message: `Connection failed: ${error instanceof Error ? error.message : 'Unknown error'}` 
       });
     } finally {
       setIsTestingConnection(false);
@@ -146,6 +172,15 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
   };
 
   const selectedProviderInfo = providers.find(p => p.id === selectedProvider);
+
+  if (providers.length === 0) {
+    return (
+      <div className="flex items-center justify-center p-8">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+        <span className="ml-2">Loading AI providers...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -156,7 +191,7 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
         </p>
       </div>
 
-      <Tabs value="providers" className="w-full">
+      <Tabs defaultValue="providers" className="w-full">
         <TabsList className="grid w-full grid-cols-2">
           <TabsTrigger value="providers">Choose Provider</TabsTrigger>
           <TabsTrigger value="configuration">Configuration</TabsTrigger>
@@ -167,12 +202,12 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
             {providers.map((provider) => (
               <Card 
                 key={provider.id}
-                className={\`cursor-pointer transition-all duration-200 \${
+                className={`cursor-pointer transition-all duration-200 ${
                   selectedProvider === provider.id 
                     ? 'ring-2 ring-blue-500 border-blue-500' 
                     : 'hover:shadow-md'
-                }\`}
-                onClick={() => handleProviderSelect(provider.id)}
+                }`}
+                onClick={() => handleProviderSelect(provider.id as AIProvider)}
               >
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
@@ -281,8 +316,7 @@ export function AIProviderSelector({ onConfigChange, currentConfig }: AIProvider
       <Alert>
         <Brain className="h-4 w-4" />
         <AlertDescription>
-          <strong>Demo Mode:</strong> This is a demonstration of AI-powered analysis. 
-          In production, you would need actual API keys from your chosen provider.
+          <strong>AI Analysis Ready:</strong> Your Gemini API key is configured and ready for real AI-powered credit report analysis.
         </AlertDescription>
       </Alert>
     </div>

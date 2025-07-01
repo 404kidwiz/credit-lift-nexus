@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,19 +24,14 @@ export function RecentActivity() {
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    if (user) {
-      loadRecentActivity();
-    }
-  }, [user]); // loadRecentActivity is stable, no need to include
-
-  const loadRecentActivity = async () => {
+  const loadRecentActivity = useCallback(async () => {
+    if (!user) return;
     try {
       setLoading(true);
       
       // Load recent credit reports
       const { data: reports, error: reportsError } = await supabase
-        .from('credit_reports')
+        .from('credit_reports_analysis')
         .select('*')
         .eq('user_id', user?.id)
         .order('created_at', { ascending: false })
@@ -149,7 +144,11 @@ export function RecentActivity() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    loadRecentActivity();
+  }, [loadRecentActivity]);
 
   const formatTimestamp = (timestamp: string): string => {
     const date = new Date(timestamp);

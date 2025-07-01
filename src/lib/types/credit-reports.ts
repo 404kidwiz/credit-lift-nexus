@@ -138,4 +138,20 @@ export interface CreditReportSummary {
   total_balance: number;
   payment_history_score: number;
   risk_score: number;
+}
+
+export interface ParsedCreditReportData {
+  personal_info: {
+    name: string;
+    ssn: string;
+    address: string;
+    date_of_birth: string;
+  };
+  accounts: CreditAccount[];
+  inquiries: CreditInquiry[];
+}
+
+export interface CreditInquiry {
+  company: string;
+  date: string;
 } 

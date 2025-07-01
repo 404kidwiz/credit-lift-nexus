@@ -5,6 +5,8 @@
  * the Google Cloud Function with your React frontend.
  */
 
+import { SupabaseClient, RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+
 // Type definitions for the GCF API
 export interface ProcessCreditReportRequest {
   pdf_url: string;
@@ -139,9 +141,9 @@ export class CreditReportProcessorClient {
  * Supabase integration helpers
  */
 export class CreditReportSupabaseClient {
-  private supabase: any; // Replace with proper Supabase client type
+  private supabase: SupabaseClient; // Replace with proper Supabase client type
 
-  constructor(supabaseClient: any) {
+  constructor(supabaseClient: SupabaseClient) {
     this.supabase = supabaseClient;
   }
 
@@ -218,7 +220,7 @@ export class CreditReportSupabaseClient {
    */
   subscribeToAnalyses(
     userId: string,
-    callback: (payload: any) => void
+    callback: (payload: RealtimePostgresChangesPayload<CreditReportAnalysis>) => void
   ) {
     return this.supabase
       .channel('credit_reports_analysis')
@@ -239,7 +241,7 @@ export class CreditReportSupabaseClient {
 /**
  * React Hook for credit report processing
  */
-export function useCreditReportProcessor(gcfUrl: string, supabaseClient: any) {
+export function useCreditReportProcessor(gcfUrl: string, supabaseClient: SupabaseClient) {
   const processor = new CreditReportProcessorClient(gcfUrl);
   const supabaseHelper = new CreditReportSupabaseClient(supabaseClient);
 
@@ -289,9 +291,9 @@ export const CreditReportUtils = {
   formatRiskLevel(riskLevel: string): string {
     const riskMap: Record<string, string> = {
       'No Violations': '✅ No Issues',
-      'Low Risk': '�� Low Risk',
+      'Low Risk': '🟢 Low Risk',
       'Medium Risk': '🟡 Medium Risk',
-      'High Risk': '🔴 High Risk'
+      'High Risk': '🟠 High Risk'
     };
     return riskMap[riskLevel] || riskLevel;
   },

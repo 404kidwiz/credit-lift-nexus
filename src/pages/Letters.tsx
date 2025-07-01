@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { NavigationHeader } from '@/components/NavigationHeader';
 import { Card } from '@/components/ui/card';
@@ -16,6 +16,7 @@ import { DisputeLetter, DisputeLetterGenerator } from '@/lib/services/disputeLet
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { CreditAccount } from 'credit-report-processor-gcf/frontend_integration';
 
 const Letters: React.FC = () => {
   const { reportId } = useParams<{ reportId: string }>();
@@ -27,13 +28,7 @@ const Letters: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [copiedLetter, setCopiedLetter] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (reportId) {
-      loadAnalysisDataAndGenerateLetters();
-    }
-  }, [reportId]);
-
-  const loadAnalysisDataAndGenerateLetters = async () => {
+  const loadAnalysisDataAndGenerateLetters = useCallback(async () => {
     if (!reportId || !user) return;
     
     setLoading(true);
@@ -62,7 +57,7 @@ const Letters: React.FC = () => {
 
       // Extract negative items from accounts
       const negativeItems = parsedData.accounts
-        .filter((account: any) => {
+        .filter((account: CreditAccount) => {
           const status = account.status?.toLowerCase();
           return status === 'late' || 
                  status === 'past_due' || 
@@ -72,7 +67,7 @@ const Letters: React.FC = () => {
                  status === 'derogatory' ||
                  status === 'default';
         })
-        .map((account: any, index: number) => ({
+        .map((account: CreditAccount, index: number) => ({
           id: `ni_${index}`,
           credit_report_id: reportId,
           account_number: account.account_number || '',
@@ -152,7 +147,11 @@ const Letters: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [reportId, user, toast]);
+
+  useEffect(() => {
+    loadAnalysisDataAndGenerateLetters();
+  }, [loadAnalysisDataAndGenerateLetters]);
 
   const copyToClipboard = async (content: string, letterId: string) => {
     try {

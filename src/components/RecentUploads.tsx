@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -15,41 +15,50 @@ export const RecentUploads: React.FC = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (user) {
-      loadRecentUploads();
-    }
+    const loadRecentUploads = async () => {
+      if (!user) return;
+
+      try {
+        // Try to load from database first
+        const { data, error } = await supabase
+          .from('credit_reports_analysis')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(5);
+
+        if (error) {
+          console.log('Database error, trying localStorage fallback:', error);
+          // Fallback to localStorage
+          const localData = JSON.parse(localStorage.getItem('credit_reports_analysis') || '[]');
+          const userReports = localData.filter((report: { user_id: string }) => report.user_id === user.id);
+          setUploads(userReports.slice(0, 5));
+        } else {
+          setUploads(data || []);
+        }
+      } catch (error) {
+        console.error('Error loading recent uploads:', error);
+        // Fallback to localStorage
+        const localData = JSON.parse(localStorage.getItem('credit_reports_analysis') || '[]');
+        const userReports = localData.filter((report: { user_id: string }) => report.user_id === user.id);
+        setUploads(userReports.slice(0, 5));
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadRecentUploads();
   }, [user]);
-
-  const loadRecentUploads = async () => {
-    try {
-      setLoading(true);
-      
-      const { data, error } = await supabase
-        .from('credit_reports')
-        .select('*')
-        .eq('user_id', user?.id)
-        .order('created_at', { ascending: false })
-        .limit(5);
-
-      if (error) throw error;
-      
-      setUploads(data || []);
-    } catch (error) {
-      console.error('Failed to load recent uploads:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const getStatusIcon = (status: CreditReport['status']) => {
     switch (status) {
       case 'uploaded':
         return <Clock className="h-4 w-4 text-yellow-500" />;
-      case 'analyzing':
+      case 'processing':
         return <Clock className="h-4 w-4 text-blue-500 animate-pulse" />;
-      case 'analyzed':
+      case 'processed':
         return <CheckCircle className="h-4 w-4 text-green-500" />;
-      case 'error':
+      case 'failed':
         return <AlertCircle className="h-4 w-4 text-red-500" />;
       default:
         return <FileText className="h-4 w-4" />;
@@ -60,12 +69,12 @@ export const RecentUploads: React.FC = () => {
     switch (status) {
       case 'uploaded':
         return 'Uploaded';
-      case 'analyzing':
-        return 'Analyzing';
-      case 'analyzed':
-        return 'Analyzed';
-      case 'error':
-        return 'Error';
+      case 'processing':
+        return 'Processing';
+      case 'processed':
+        return 'Processed';
+      case 'failed':
+        return 'Failed';
       default:
         return 'Unknown';
     }
@@ -153,7 +162,7 @@ export const RecentUploads: React.FC = () => {
             </div>
             
             <div className="flex items-center space-x-2">
-              {upload.status === 'analyzed' && (
+              {upload.status === 'processed' && (
                 <Button
                   size="sm"
                   variant="outline"
